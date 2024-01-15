@@ -221,7 +221,14 @@
 			</div>	
 		</div>
 		
-		<Checkbox v-model:checked="settings.checkAllDates" label="Check all dates" />
+    <div v-if="!settings.timeframeFilterEnabled">
+      <Checkbox v-model:checked="settings.checkAllDates" label="Check all dates" />
+    </div>
+
+    <Checkbox v-model:checked="settings.timeframeFilterEnabled" label="Timeframe filter" />
+    <div v-if="settings.timeframeFilterEnabled" class="indent">
+      <input type="text" v-model="settings.timeframeFilter" />
+    </div>
 			 
 		<hr />
 		<div class="customLayers">
@@ -357,6 +364,8 @@ const settings = reactive({
   selectMonths: false,
   findRegions: false,
   regionRadius: 100,
+  timeframeFilterEnabled: false,
+  timeframeFilter: "",
 });
 
 const select = ref("Select a country or draw a polygon");
@@ -842,6 +851,49 @@ function sleep(ms) {
 async function getLoc(loc, country) {
   return SV.getPanoramaByLocation(new google.maps.LatLng(loc.lat, loc.lng), settings.radius, (res, status) => {
     if (status != google.maps.StreetViewStatus.OK) return false;
+
+    if (settings.timeframeFilterEnabled) {
+      settings.checkAllDates = true;
+    }
+
+    if (settings.timeframeFilterEnabled && res.time) {
+      if (!res.time.length) return false;
+      const fromDate = Date.parse(settings.fromDate);
+      const toDate = Date.parse(settings.toDate);
+
+      let validTimeframes = [];
+
+      const promises = res.time.map((loc) => {
+        return new Promise((resolve) => {
+          SV.getPanorama({ pano: loc.pano }, (pano, status) => {
+            if (status === google.maps.StreetViewStatus.OK && isPanoGood(pano)) {
+              resolve(loc);
+            } else {
+              resolve(null);
+            }
+          });
+        });
+      });
+
+      // Wait for all promises to resolve
+      Promise.all(promises).then((results) => {
+        validTimeframes = results.filter((result) => result !== null);
+
+        const loc = parseTimeframeFilter(validTimeframes, settings.timeframeFilter);
+        if (loc) {
+          // Checks if pano ID is 22 characters long. Otherwise, it's an Ari
+          const date = Object.values(loc).find((val) => val instanceof Date);
+          const iDate = Date.parse(date.getFullYear() + "-" + (date.getMonth() > 8 ? "" : "0") + (date.getMonth() + 1)); // this will parse the Date object from res.time[i] (like Fri Oct 01 2021 00:00:00 GMT-0700 (Pacific Daylight Time)) to a local timestamp, like Date.parse("2021-09") == 1630454400000 for Pacific Daylight Time
+          if (iDate >= fromDate && iDate <= toDate) {
+            // if date ranges from fromDate to toDate, set dateWithin to true and stop the loop
+            getPano(loc.pano, country);
+          }
+        }
+      });
+      
+      return false;
+    }
+
     if (settings.rejectUnofficial && !settings.rejectOfficial) {
 	    if (res.location.pano.length != 22) return false;
 	    if (settings.rejectNoDescription && !settings.rejectDescription && !res.location.description && !res.location.shortDescription) return false;
@@ -1069,7 +1121,7 @@ function getPanoDeep(id, country, depth) {
     if (!pano) console.log(status, pano);
     const inCountry = booleanPointInPolygon([pano.location.latLng.lng(), pano.location.latLng.lat()], country.feature);
     const isPanoGoodAndInCountry = isPanoGood(pano) && inCountry;
-    if (settings.checkAllDates && !settings.selectMonths && pano.time) {
+    if (settings.checkAllDates && !settings.selectMonths && !settings.timeframeFilterEnabled && pano.time) {
       const fromDate = Date.parse(settings.fromDate);
       const toDate = Date.parse(settings.toDate);
       for (const loc of pano.time) {
@@ -1350,6 +1402,42 @@ function clearLocations() {
   for (const polygon of selected.value) polygon.found.length = 0;
 }
 
+function parseTimeframeFilter(list, userInput) {
+  // Handle * input
+  if (userInput === "*") {
+    return list[Math.floor(Math.random()*list.length)];
+  }
+
+  // Handle single number input
+  if (!isNaN(userInput)) {
+    const index = parseInt(userInput);
+    if (index > 0 && index <= list.length) {
+      return list[index - 1];
+    } else if (index < 0 && Math.abs(index) <= list.length) {
+      return list[list.length + index];
+    } else {
+      return false;
+    }
+  }
+
+  // Handle range input
+  if (userInput.includes(',')) {
+    const [start, end] = userInput.split(',').map(Number);
+    if (!isNaN(start) && !isNaN(end)) {
+      const adjustedStart = start > 0 ? start - 1 : list.length + start;
+      const adjustedEnd = end > 0 ? end - 1 : list.length + end;
+
+      if (adjustedStart >= 0 && adjustedEnd < list.length && adjustedStart <= adjustedEnd) {
+        const randomIndex = Math.floor(Math.random() * (adjustedEnd - adjustedStart + 1)) + adjustedStart;
+        return list[randomIndex];
+      } else {
+        return false;
+      }
+    }
+  }
+
+  return false;
+}
 
 </script>
 
